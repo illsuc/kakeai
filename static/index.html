@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kakeai — PayPal AI Agent</title>
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --ink:#1a2233; --sub:#6b7280; --accent:#003087; --accent2:#0070ba; --ok:#0a7d33; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Segoe UI",sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:linear-gradient(90deg,var(--accent),var(--accent2)); color:#fff; padding:18px 24px; display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:20px; margin:0; }
+  header .tag { font-size:12px; opacity:.85; }
+  #badge { margin-left:auto; font-size:12px; background:rgba(255,255,255,.2); padding:4px 10px; border-radius:20px; }
+  main { max-width:960px; margin:20px auto; padding:0 16px; display:grid; grid-template-columns:1.4fr 1fr; gap:16px; }
+  @media (max-width:760px){ main{grid-template-columns:1fr;} }
+  .card { background:var(--card); border-radius:14px; box-shadow:0 1px 4px rgba(0,0,0,.08); padding:16px; }
+  .card h2 { font-size:14px; margin:0 0 12px; color:var(--sub); text-transform:uppercase; letter-spacing:.05em; }
+  #log { height:380px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding-right:4px; }
+  .msg { max-width:85%; padding:10px 14px; border-radius:14px; font-size:14px; line-height:1.5; white-space:pre-wrap; }
+  .user { align-self:flex-end; background:var(--accent2); color:#fff; border-bottom-right-radius:4px; }
+  .bot { align-self:flex-start; background:#eef1f6; border-bottom-left-radius:4px; }
+  .bot details { margin-top:6px; font-size:11px; color:var(--sub); }
+  .bot pre { margin:4px 0 0; font-size:11px; overflow-x:auto; }
+  form { display:flex; gap:8px; margin-top:12px; }
+  input[type=text]{ flex:1; padding:12px; border:1px solid #d6dae3; border-radius:10px; font-size:14px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:10px; padding:12px 18px; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+  .chip { font-size:12px; background:#eef1f6; border:0; color:var(--accent); border-radius:20px; padding:6px 12px; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid #eef0f4; }
+  th { color:var(--sub); font-weight:600; font-size:11px; text-transform:uppercase; }
+  .status { font-size:11px; padding:2px 8px; border-radius:10px; background:#eef1f6; }
+  .status.PAID,.status.SENT { background:#e2f4e8; color:var(--ok); }
+  .status.DRAFT { background:#fdf3d7; color:#8a6d00; }
+  footer { text-align:center; color:var(--sub); font-size:12px; padding:18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>掛け合い Kakeai</h1>
+  <span class="tag">PayPal を自然言語で操作する AI エージェント</span>
+  <span id="badge">…</span>
+</header>
+<main>
+  <section class="card">
+    <h2>Chat / チャット</h2>
+    <div id="log"></div>
+    <form id="f">
+      <input type="text" id="m" placeholder="例: 田中さんへ Web制作 150,000円の請求書を作成して送信" autocomplete="off">
+      <button id="send" type="submit">送信</button>
+    </form>
+    <div class="chips">
+      <button class="chip" type="button">田中さんへ Web制作 150,000円の請求書を作成して送信</button>
+      <button class="chip" type="button">請求書の一覧を見せて</button>
+      <button class="chip" type="button">売上を要約して</button>
+      <button class="chip" type="button">コンサルティング 50,000円のチェックアウトを作成</button>
+      <button class="chip" type="button">Create an invoice for Suzuki Design, consulting $800, due end of month</button>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Invoices / 請求書</h2>
+    <table>
+      <thead><tr><th>ID</th><th>宛先</th><th>金額</th><th>状態</th></tr></thead>
+      <tbody id="inv"></tbody>
+    </table>
+  </section>
+</main>
+<footer>PayPal AI Hackathon 2026 · sandbox only · AI = Gemini (free tier) with offline fallback</footer>
+<script>
+const log = document.getElementById('log');
+const invBody = document.getElementById('inv');
+const badge = document.getElementById('badge');
+const fmt = (c, n) => (c === 'JPY' ? '¥' : '$') + Number(n).toLocaleString();
+
+function add(role, text, extra) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + role;
+  d.textContent = text;
+  if (extra) {
+    const det = document.createElement('details');
+    const sum = document.createElement('summary');
+    sum.textContent = 'intent / result';
+    const pre = document.createElement('pre');
+    pre.textContent = JSON.stringify(extra, null, 2);
+    det.appendChild(sum); det.appendChild(pre); d.appendChild(det);
+  }
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+}
+
+async function refresh() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    badge.textContent = s.mock ? 'MOCK（キー未設定）' : 'LIVE sandbox';
+    const r = await (await fetch('/api/invoices')).json();
+    invBody.innerHTML = '';
+    (r.invoices || []).forEach(i => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${i.id}</td><td>${i.recipient_name || i.recipient_email || '—'}</td>` +
+        `<td>${fmt(i.currency, i.amount)}</td><td><span class="status ${i.status}">${i.status}</span></td>`;
+      invBody.appendChild(tr);
+    });
+  } catch (e) { badge.textContent = 'offline'; }
+}
+
+async function send(text) {
+  add('user', text);
+  document.getElementById('send').disabled = true;
+  try {
+    const r = await (await fetch('/api/chat', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text})
+    })).json();
+    if (r.error) add('bot', 'エラー: ' + r.error);
+    else {
+      add('bot', r.reply, {intent: r.intent, result: r.result});
+      const o = r.result && r.result.order;
+      if (o && o.approve_url) {
+        const d = document.createElement('div');
+        d.className = 'msg bot';
+        const a = document.createElement('a');
+        a.href = o.approve_url; a.target = '_blank'; a.rel = 'noopener';
+        a.textContent = '→ PayPal チェックアウトを開く（' + o.id + '）';
+        d.appendChild(a); log.appendChild(d); log.scrollTop = log.scrollHeight;
+      }
+    }
+  } catch (e) { add('bot', '通信エラー: ' + e); }
+  document.getElementById('send').disabled = false;
+  refresh();
+}
+
+document.getElementById('f').addEventListener('submit', e => {
+  e.preventDefault();
+  const m = document.getElementById('m');
+  if (m.value.trim()) { send(m.value.trim()); m.value = ''; }
+});
+document.querySelectorAll('.chip').forEach(c =>
+  c.addEventListener('click', () => send(c.textContent)));
+refresh();
+add('bot', 'こんにちは。掛け合い Kakeai です。請求書の作成・送信・一覧・要約、チェックアウト作成を、日本語でも英語でも自然に指示できます。');
+</script>
+</body>
+</html>
