@@ -1,0 +1,6 @@
+{
+  "mock": true,
+  "paypal_client_id": "",
+  "paypal_secret": "",
+  "gemini_api_key": ""
+}
